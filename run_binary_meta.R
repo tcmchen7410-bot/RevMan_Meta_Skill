@@ -10,7 +10,14 @@ suppressPackageStartupMessages({
 })
 
 # 1. 启用 RevMan 5 预设
-settings.meta("revman5")
+settings.meta("RevMan5")
+cfg <- settings.meta()
+stopifnot(
+  cfg$method.tau == "DL",
+  cfg$method.random.ci == "classic",
+  isTRUE(cfg$RR.Cochrane),
+  cfg$layout == "RevMan5"
+)
 
 # 2. 读取终端参数
 args <- commandArgs(trailingOnly = TRUE)
