@@ -1,372 +1,50 @@
-#!/usr/bin/env Rscript
-
-# ============================================================
-# Egger's Regression Test for Funnel-Plot Asymmetry
-#
-# RevMan Meta Skill
-#
-# Required input columns:
-#   study
-#   TE
-#   seTE
-#
-# TE:
-#   Treatment effect on the analysis scale.
-#
-# Examples:
-#   OR / RR -> log(OR) / log(RR)
-#   MD      -> MD
-#   SMD     -> SMD
-#
-# Usage:
-#
-# Rscript run_egger_test.R data.csv OR
-# Rscript run_egger_test.R data.csv RR
-# Rscript run_egger_test.R data.csv MD
-# Rscript run_egger_test.R data.csv SMD
-#
-# Egger's test is NOT performed when fewer than 10 studies
-# are available.
-# ============================================================
-
-
-# ------------------------------------------------------------
-# Load packages
-# ------------------------------------------------------------
-
 suppressPackageStartupMessages({
+  if (!requireNamespace("meta", quietly = TRUE)) stop("R package 'meta' is required.")
   library(meta)
 })
 
-
-# ------------------------------------------------------------
-# Command-line arguments
-# ------------------------------------------------------------
+settings.meta("RevMan5")
+cfg <- settings.meta()
+stopifnot(cfg$method.tau == "DL", cfg$layout == "RevMan5")
 
 args <- commandArgs(trailingOnly = TRUE)
+if (length(args) < 1) stop("Usage: Rscript run_egger_test.R <csv> [OR|RR|MD|SMD]")
+file_path <- args[1]
+sm_param <- if (length(args) >= 2) toupper(args[2]) else NA_character_
+d <- read.csv(file_path, check.names = TRUE, stringsAsFactors = FALSE)
 
-if (length(args) < 1) {
+is_binary <- all(c("event.e", "n.e", "event.c", "n.c") %in% names(d))
+is_continuous <- all(c("m_e", "sd_e", "n_e", "m_c", "n_c") %in% names(d)) && any(c("sd_c", "s_c") %in% names(d))
+if (!is_binary && !is_continuous) stop("CSV columns do not identify binary or continuous outcome data.")
 
-  stop(
-    paste0(
-      "\nUsage:\n",
-      "Rscript run_egger_test.R <input.csv> [effect_measure]\n\n",
-      "Required columns:\n",
-      "study, TE, seTE\n\n",
-      "Examples:\n",
-      "Rscript run_egger_test.R data.csv OR\n",
-      "Rscript run_egger_test.R data.csv RR\n",
-      "Rscript run_egger_test.R data.csv MD\n",
-      "Rscript run_egger_test.R data.csv SMD\n"
-    )
-  )
-}
-
-
-input_file <- args[1]
-
-sm <- if (length(args) >= 2) {
-  toupper(args[2])
+if (is_binary) {
+  if (is.na(sm_param)) sm_param <- "OR"
+  required <- c("event.e", "n.e", "event.c", "n.c")
+  d <- d[complete.cases(d[, required]), , drop = FALSE]
 } else {
-  "OR"
+  if (is.na(sm_param)) sm_param <- "MD"
+  sd_c_name <- if ("sd_c" %in% names(d)) "sd_c" else "s_c"
+  required <- c("m_e", "sd_e", "n_e", "m_c", sd_c_name, "n_c")
+  d <- d[complete.cases(d[, required]), , drop = FALSE]
 }
 
-
-# ------------------------------------------------------------
-# Check input file
-# ------------------------------------------------------------
-
-if (!file.exists(input_file)) {
-  stop(
-    paste(
-      "Input file does not exist:",
-      input_file
-    )
-  )
-}
-
-
-# ------------------------------------------------------------
-# Read data
-# ------------------------------------------------------------
-
-dat <- read.csv(
-  input_file,
-  stringsAsFactors = FALSE,
-  check.names = FALSE
-)
-
-
-# ------------------------------------------------------------
-# Required columns
-# ------------------------------------------------------------
-
-required_cols <- c(
-  "study",
-  "TE",
-  "seTE"
-)
-
-missing_cols <- setdiff(
-  required_cols,
-  names(dat)
-)
-
-if (length(missing_cols) > 0) {
-
-  stop(
-    paste0(
-      "Missing required column(s): ",
-      paste(
-        missing_cols,
-        collapse = ", "
-      )
-    )
-  )
-}
-
-
-# ------------------------------------------------------------
-# Convert numerical variables
-# ------------------------------------------------------------
-
-dat$TE <- suppressWarnings(
-  as.numeric(dat$TE)
-)
-
-dat$seTE <- suppressWarnings(
-  as.numeric(dat$seTE)
-)
-
-
-# ------------------------------------------------------------
-# Remove incomplete / invalid observations
-# ------------------------------------------------------------
-
-valid <- (
-  !is.na(dat$study) &
-  dat$study != "" &
-  is.finite(dat$TE) &
-  is.finite(dat$seTE) &
-  dat$seTE > 0
-)
-
-removed <- sum(!valid)
-
-dat <- dat[valid, , drop = FALSE]
-
-
-if (removed > 0) {
-
-  cat(
-    "\n",
-    removed,
-    " row(s) with missing or invalid data were excluded.\n",
-    sep = ""
-  )
-}
-
-
-# ------------------------------------------------------------
-# Number of studies
-# ------------------------------------------------------------
-
-k <- nrow(dat)
-
-
-cat("\n")
-cat("============================================\n")
-cat("Egger's Regression Test\n")
-cat("============================================\n\n")
-
-cat(
-  "Number of studies:",
-  k,
-  "\n"
-)
-
-
-# ------------------------------------------------------------
-# Mandatory k >= 10 rule
-# ------------------------------------------------------------
-
+k <- nrow(d)
 if (k < 10) {
-
-  cat("\n")
-
-  cat(
-    "Fewer than 10 studies were included; therefore, ",
-    "Egger's test for funnel-plot asymmetry was not performed.\n",
-    sep = ""
-  )
-
-  cat("\n")
-
-  cat(
-    "No test statistic or P value was calculated.\n"
-  )
-
-  cat(
-    "This result should not be interpreted as evidence ",
-    "for or against publication bias.\n"
-  )
-
-  cat("\n")
-  cat("============================================\n")
-
-  quit(
-    save = "no",
-    status = 0
-  )
+  cat("Fewer than 10 studies were included; therefore, the test for funnel-plot asymmetry was not performed.\n")
+  quit(status = 0)
 }
 
-
-# ------------------------------------------------------------
-# Construct generic meta-analysis object
-# ------------------------------------------------------------
-
-m <- metagen(
-  TE = TE,
-  seTE = seTE,
-  studlab = study,
-  data = dat,
-  sm = sm,
-  common = FALSE,
-  random = TRUE
-)
-
-
-# ------------------------------------------------------------
-# Egger's regression test
-# ------------------------------------------------------------
-
-egger <- metabias(
-  m,
-  method.bias = "linreg",
-  k.min = 10
-)
-
-
-# ------------------------------------------------------------
-# Extract results
-# ------------------------------------------------------------
-
-cat("\n")
-cat(
-  "Test: Egger's regression test\n"
-)
-
-cat(
-  "Effect measure:",
-  sm,
-  "\n"
-)
-
-
-if (!is.null(egger$statistic)) {
-
-  statistic <- as.numeric(
-    egger$statistic
-  )
-
-  cat(
-    "Test statistic:",
-    format(
-      statistic,
-      digits = 4
-    ),
-    "\n"
-  )
+if (is_binary) {
+  m <- metabin(event.e, n.e, event.c, n.c, data = d, sm = sm_param,
+               studlab = paste(Author, Year))
+} else {
+  sd_c <- d[[sd_c_name]]
+  m <- metacont(n_e, m_e, sd_e, n_c, m_c, sd_c, data = d, sm = sm_param,
+                studlab = paste(Author, Year))
 }
 
-
-if (!is.null(egger$df)) {
-
-  df <- as.numeric(
-    egger$df
-  )
-
-  cat(
-    "Degrees of freedom:",
-    df,
-    "\n"
-  )
-}
-
-
-if (!is.null(egger$p.value)) {
-
-  p_value <- as.numeric(
-    egger$p.value
-  )
-
-  cat(
-    "P value:",
-    format.pval(
-      p_value,
-      digits = 4,
-      eps = 0.0001
-    ),
-    "\n"
-  )
-}
-
-
-# ------------------------------------------------------------
-# Interpretation note
-# ------------------------------------------------------------
-
-cat("\n")
-cat("Interpretation note:\n")
-
-cat(
-  "Egger's test evaluates funnel-plot asymmetry / ",
-  "small-study effects.\n",
-  sep = ""
-)
-
-cat(
-  "A statistically significant result does not by itself ",
-  "prove publication bias.\n",
-  sep = ""
-)
-
-cat(
-  "A nonsignificant result should not be interpreted as ",
-  "evidence that publication bias is absent.\n",
-  sep = ""
-)
-
-
-# ------------------------------------------------------------
-# Funnel plot
-# ------------------------------------------------------------
-
-output_file <- "egger_funnel_plot.png"
-
-png(
-  filename = output_file,
-  width = 1800,
-  height = 1800,
-  res = 220
-)
-
-funnel(
-  m,
-  studlab = FALSE,
-  xlab = sm
-)
-
+test <- metabias(m, method.bias = "linreg", k.min = 10)
+print(test)
+png("egger_funnel_plot.png", width = 1800, height = 1600, res = 200)
+funnel(m)
 dev.off()
-
-
-cat("\n")
-
-cat(
-  "Funnel plot saved as:",
-  output_file,
-  "\n"
-)
-
-cat("\n")
-cat("============================================\n")
